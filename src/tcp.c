@@ -54,18 +54,6 @@ static void client_free(client_t *client) {
 
 void client_close(client_t *client);
 
-// async: client close timer expired
-static void client_on_timeout(uv_timer_t *timer, int status)
-{
-  client_t *self = timer->data;
-  assert(self);
-
-  DEBUGF("CTIMEOUT %p %d", self, status);
-
-  // close the client
-  client_close(self);
-}
-
 // async: close is done
 static void client_after_close(uv_handle_t *handle)
 {
@@ -89,17 +77,8 @@ void client_close(client_t *self)
 
   self->closed = 1;
 
-  // stop close timer
-  uv_timer_stop(&self->close_timer);
-  // dispose close timer
-  if (uv_is_active((uv_handle_t *)&self->close_timer)) {
-    uv_close((uv_handle_t *)&self->close_timer, NULL);
-  }
-
   // close the handle
-  if (uv_is_active(&self->handle)) {
-    uv_close((uv_handle_t *)&self->handle, client_after_close);
-  }
+  uv_close((uv_handle_t *)&self->handle, client_after_close);
 }
 
 // async: shutdown is done
@@ -123,9 +102,6 @@ void client_finish(client_t *self)
   assert(self);
   // sanity check
   if (self->closed) return;
-
-  // stop close timer
-  uv_timer_stop(&self->close_timer);
 
   // shutdown UV stream, then close this client
   uv_shutdown_t *rq = (uv_shutdown_t *)req_alloc(NULL);
@@ -181,8 +157,6 @@ static void client_on_read(uv_stream_t *handle, ssize_t nread, uv_buf_t buf)
 
   // read something?
   if (nread >= 0) {
-    // restart inactivity timer
-    uv_timer_again(&self->close_timer);
     // feed read data
     buf.len = nread;
     self->server->on_event(self, EVT_CLI_DATA, 0, &buf);
@@ -224,13 +198,11 @@ static void server_on_connection(uv_stream_t *handle, int status)
   client->handle.data = client;
   // TODO: EMFILE trick!
   // https://github.com/joyent/libuv/blob/master/src/unix/ev/ev.3#L1812-1816
-  uv_accept((uv_stream_t *)&server->handle, (uv_stream_t *)&client->handle);
-
-  // setup inactivity timer
-  uv_timer_init(server->handle.loop, &client->close_timer);
-  client->close_timer.data = client;
-  uv_timer_start(&client->close_timer, client_on_timeout,
-      server->timeouts.first_message, server->timeouts.stale_client);
+  if (uv_accept((uv_stream_t *)&server->handle, (uv_stream_t *)&client->handle)) {
+    // accept failed? report error
+    client->server->on_event(server, EVT_ERROR, uv_last_error(uv_default_loop()).code, NULL);
+    exit(-2);
+  }
 
   // fire 'open' event
   client->server->on_event(client, EVT_CLI_OPEN, 0, NULL);

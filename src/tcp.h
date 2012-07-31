@@ -42,7 +42,6 @@ struct client_s {
   server_t *server;
   uv_tcp_t handle;
   int closed : 1;
-  uv_timer_t close_timer; // inactivity timer
 };
 
 struct timeouts_s {
